@@ -53,42 +53,54 @@ $refIsOrig = $Ref -like 'origin/*'
 $branchName = $null
 
 if ($refIsSHA) {
-  Write-Host "Fetching specific commit $Ref ..."
-  Invoke-Git @("fetch","origin",$Ref,"--depth","1")
+  Invoke-Git -Quiet @("fetch","origin",$Ref,"--depth","1")
+  Write-Host "Fetched commit $Ref ..."
 } elseif ($refIsTag) {
   $tagName = $Ref -replace '^tags/',''
-  Write-Host "Fetching tags (will check out tag '$tagName') ..."
-  Invoke-Git @("fetch","--tags")
+  Invoke-Git -Quiet @("fetch","--tags")
+  Write-Host "Fetched tags (will checkout '$tagName') ..."
 } else {
   # If ref is origin/<branch>, strip the prefix; otherwise treat it as a branch name
-  $branchName = ($refIsOrig) ? ($Ref -replace '^origin/','') : $Ref
-  Write-Host "Fetching remote branch 'origin/$branchName' ..."
-  Invoke-Git @("fetch","origin",$branchName,"--depth","1")
+  if ($refIsOrig) {
+    $branchName = ($Ref -replace '^origin/','')
+} else {
+    $branchName = $Ref
+}
+  Invoke-Git -Quiet @("fetch","origin",$branchName,"--depth","1")
+  Write-Host "Fetched remote branch 'origin/$branchName' ..."
 }
 
 # 4) Check out the requested ref
 if ($refIsSHA) {
   # Directly check out a commit SHA (detached HEAD)
-  Invoke-Git @("checkout",$Ref)
+  Invoke-Git -Quiet @("checkout",$Ref)
+  Write-Host "Checked out $Ref (detached)"
 } elseif ($refIsTag) {
   # Check out a lightweight/annotated tag in detached mode
   $tagName = $Ref -replace '^tags/',''
-  Invoke-Git @("checkout","--detach","tags/$tagName")
+  Invoke-Git -Quiet @("checkout","--detach","tags/$tagName")
+  Write-Host "Checked out tag '$tagName' (detached)"
 } elseif ($branchName) {
   if ($PinExact) {
     # Use the exact remote commit (detached), do not create a local branch
-    Invoke-Git @("checkout","--detach","origin/$branchName")
+    Invoke-Git -Quiet @("checkout","--detach","origin/$branchName")
+    Write-Host "Checked out origin/$branchName (detached)"
   } else {
     # Recreate local branch tracking the remote (delete if it already exists)
     & git rev-parse --verify $branchName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
-      Invoke-Git @("branch","-D",$branchName) -Quiet
+      Invoke-Git -Quiet @("switch",$branchName)
+      Invoke-Git -Quiet @("reset","--hard","origin/$branchName")
+    } else {
+      Invoke-Git -Quiet @("switch","-c",$branchName,"origin/$branchName")
     }
-    Invoke-Git @("checkout","-b",$branchName,"origin/$branchName")
+    Invoke-Git -Quiet @("branch","--set-upstream-to=origin/$branchName",$branchName)
+    Write-Host "Switched to local branch '$branchName' (tracking origin/$branchName)"
   }
 } else {
   # Fallback: detach to origin/nightly if parsing didn’t match anything
-  Invoke-Git @("checkout","--detach","origin/nightly")
+  Invoke-Git -Quiet @("checkout","--detach","origin/nightly")
+  Write-Host "Checked out origin/nightly (detached)"
 }
 
 function Invoke-GitSingle {
