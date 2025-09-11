@@ -2,3 +2,4 @@
 	path = vendor/WeylandTavern
 	url = https://github.com/Shirubaurufu/WeylandTavern
 	branch = nightly
+	shallow = true

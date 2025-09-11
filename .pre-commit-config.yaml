@@ -1,0 +1,7 @@
+repos:
+  - repo: local
+    hooks:
+      - id: forbid-submodule-head-change
+        name: forbid submodule HEAD change
+        entry: bash -lc 'git diff --cached --submodule=diff -- vendor/WeylandTavern | (! grep -q "Subproject commit")'
+        language: system

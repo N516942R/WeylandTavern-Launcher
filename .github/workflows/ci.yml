@@ -1,0 +1,19 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Fail if submodule is dirty
+        run: |
+          if ! git diff --quiet -- vendor/WeylandTavern; then
+            echo "Submodule has local diffs – forbidden"; exit 1
+          fi
+      - name: Print pinned submodule SHA
+        run: |
+          cd vendor/WeylandTavern
+          git rev-parse HEAD
