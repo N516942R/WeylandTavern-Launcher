@@ -1,0 +1,16 @@
+{
+  "productName": "WeylandTavern",
+  "identifier": "https://ko-fi.com/luckypaw",
+  "build": { "beforeDevCommand": "", "beforeBuildCommand": "" },
+  "app": { "windows": [{ "title": "WeylandTavern", "width": 1200, "height": 800, "resizable": true }] },
+  "plugins": {},
+  "tauri": {
+    "allowlist": {
+      "shell": { "all": false, "execute": true },
+      "fs": { "all": false, "readFile": true },
+      "path": { "all": true },
+      "process": { "relaunch": false, "exit": true }
+    },
+    "bundle": { "active": false }
+  }
+}
