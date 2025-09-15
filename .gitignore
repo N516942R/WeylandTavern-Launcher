@@ -1,1 +1,4 @@
-Launcher/logs
+Launcher/logs/
+Launcher/node_modules/
+Launcher/dist/
+Launcher/src-tauri/target/
