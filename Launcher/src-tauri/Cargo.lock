@@ -4385,6 +4385,7 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "tauri",
+ "tauri-build",
  "tokio",
  "windows 0.52.0",
 ]
