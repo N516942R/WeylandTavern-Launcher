@@ -98,6 +98,7 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
             cmd.env("NODE_ENV", "production");
             cmd.env("NO_BROWSER", "1");
             cmd.env("BROWSER", "none");
+
             if cmd.status().await.is_err() {
                 log_line(app, "character sync failed").await;
             }
