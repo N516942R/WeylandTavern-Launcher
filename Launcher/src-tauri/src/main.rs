@@ -525,11 +525,16 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
         );
         log_line(app, &friendly).await;
         app.emit("server-ready", &url).ok();
+        Ok(())
     } else {
-        log_line(app, "health check failed").await;
+        let message = format!(
+            "Failed to verify server health at {}. Please check the logs.",
+            url
+        );
+        log_line(app, &message).await;
+        shutdown(app.state::<ServerState>()).await;
+        Err(message)
     }
-
-    Ok(())
 }
 
 async fn append_log(
