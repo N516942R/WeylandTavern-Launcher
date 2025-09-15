@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { exit } from '@tauri-apps/api/process';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
+const appWindow = getCurrentWindow();
 
 function App() {
   const [ready, setReady] = useState(false);
@@ -24,7 +26,8 @@ function App() {
         e.preventDefault();
         setShowLogs((v) => !v);
       } else if (e.ctrlKey && e.key.toLowerCase() === 'q') {
-        exit(0);
+        e.preventDefault();
+        void appWindow.close();
       }
     };
     window.addEventListener('keydown', handler);
