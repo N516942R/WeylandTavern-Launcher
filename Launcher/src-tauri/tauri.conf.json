@@ -10,24 +10,33 @@
   },
   "app": {
     "windows": [
-      { "title": "WeylandTavern", "width": 1200, "height": 800, "resizable": true }
+      {
+        "title": "WeylandTavern",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
     ],
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self' http://127.0.0.1:*;",
       "capabilities": [
         {
           "identifier": "main",
-          "windows": ["*"],
+          "windows": [
+            "*"
+          ],
           "permissions": [
-            "core:default",
-            "path:default",
-            "process:default",
-            "shell:default"
+            "core:default"
           ]
         }
       ]
     }
   },
   "plugins": {},
-  "bundle": { "active": false }
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
 }

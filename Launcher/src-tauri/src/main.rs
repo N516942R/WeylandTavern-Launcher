@@ -81,9 +81,9 @@ async fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let app = window.app_handle();
-                let state = window.state::<ServerState>().clone();
+                let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    let state = app.state::<ServerState>();
                     shutdown(&state).await;
                     app.exit(0);
                 });
@@ -570,21 +570,36 @@ async fn wait_for_health(url: &str) -> bool {
 }
 
 async fn shutdown(state: &tauri::State<'_, ServerState>) {
-    if let Some(mut child) = state.child.lock().unwrap().take() {
+    let child = {
+        let mut guard = state.child.lock().unwrap();
+        guard.take()
+    };
+
+    if let Some(mut child) = child {
         let _ = child.kill().await;
         let _ = child.wait().await;
         #[cfg(windows)]
-        if let Some(job) = state.job.lock().unwrap().take() {
-            unsafe {
-                TerminateJobObject(job, 1);
-                CloseHandle(job);
+        {
+            if let Some(job) = {
+                let mut guard = state.job.lock().unwrap();
+                guard.take()
+            } {
+                unsafe {
+                    TerminateJobObject(job, 1);
+                    CloseHandle(job);
+                }
             }
         }
     } else {
         #[cfg(windows)]
-        if let Some(job) = state.job.lock().unwrap().take() {
-            unsafe {
-                CloseHandle(job);
+        {
+            if let Some(job) = {
+                let mut guard = state.job.lock().unwrap();
+                guard.take()
+            } {
+                unsafe {
+                    CloseHandle(job);
+                }
             }
         }
     }
