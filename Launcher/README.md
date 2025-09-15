@@ -21,7 +21,6 @@ UPDATE_SCRIPT=./tools/Update-WeylandTavern.ps1
 ```
 
 The launcher also sets the following environment variables internally to prevent an external browser from opening:
-
 ```
 NO_BROWSER=1
 BROWSER=none
