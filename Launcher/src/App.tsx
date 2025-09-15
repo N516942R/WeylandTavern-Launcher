@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
@@ -21,27 +21,29 @@ interface CharacterResponse {
 }
 
 type Step =
-  | 'updatePrompt'
   | 'updating'
   | 'updateRetry'
   | 'updateFailed'
   | 'stashPrompt'
-  | 'characterPrompt'
   | 'characterRunning'
   | 'launching';
+
+type ProgressStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped';
 
 function App() {
   const [ready, setReady] = useState(false);
   const [url, setUrl] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [showLogs, setShowLogs] = useState(false);
-  const [step, setStep] = useState<Step>('updatePrompt');
+  const [step, setStep] = useState<Step>('updating');
   const [updateResult, setUpdateResult] = useState<UpdateResponse | null>(null);
   const [characterResult, setCharacterResult] = useState<CharacterResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverRequested, setServerRequested] = useState(false);
+  const [characterRequested, setCharacterRequested] = useState(false);
+  const [hasTriggeredInitialUpdate, setHasTriggeredInitialUpdate] = useState(false);
 
   useEffect(() => {
     const unlistenReady = listen<string>('server-ready', (e) => {
@@ -79,7 +81,6 @@ function App() {
       void invoke('start_server')
         .catch((err) => {
           setServerError(err instanceof Error ? err.message : String(err));
-          setServerRequested(false);
         });
     }
   }, [step, serverRequested]);
@@ -92,7 +93,13 @@ function App() {
       const result = await invoke<UpdateResponse>('update_vendor', { attemptOverwrite });
       setUpdateResult(result);
       if (result.status === 'success' || result.status === 'upToDate') {
-        setStep(result.stashUsed ? 'stashPrompt' : 'characterPrompt');
+        if (result.stashUsed) {
+          setStep('stashPrompt');
+        } else {
+          setCharacterResult(null);
+          setCharacterRequested(false);
+          setStep('characterRunning');
+        }
       } else if (result.status === 'needRetry') {
         setStep('updateRetry');
       } else {
@@ -104,11 +111,6 @@ function App() {
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  const handleSkipUpdate = () => {
-    setUpdateResult(null);
-    setStep('characterPrompt');
   };
 
   const handleRetryWithOverwrite = () => {
@@ -123,7 +125,9 @@ function App() {
   };
 
   const handleStartAnyway = () => {
-    setStep('characterPrompt');
+    setCharacterResult(null);
+    setCharacterRequested(false);
+    setStep('characterRunning');
   };
 
   const handleExit = () => {
@@ -135,7 +139,9 @@ function App() {
     setIsProcessing(true);
     try {
       await invoke('finalize_stash', { revert });
-      setStep('characterPrompt');
+      setCharacterResult(null);
+      setCharacterRequested(false);
+      setStep('characterRunning');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -143,11 +149,10 @@ function App() {
     }
   };
 
-  const handleCharacterSync = async () => {
+  const runCharacterSync = useCallback(async () => {
     setError(null);
     setCharacterResult(null);
     setIsProcessing(true);
-    setStep('characterRunning');
     try {
       const result = await invoke<CharacterResponse>('run_character_sync');
       setCharacterResult(result);
@@ -158,14 +163,10 @@ function App() {
       });
     } finally {
       setIsProcessing(false);
+      setCharacterRequested(false);
       setStep('launching');
     }
-  };
-
-  const handleSkipCharacter = () => {
-    setCharacterResult({ success: false, message: 'Character update skipped.' });
-    setStep('launching');
-  };
+  }, []);
 
   const retryServer = () => {
     setServerError(null);
@@ -176,6 +177,186 @@ function App() {
     () => ({ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' as const }),
     []
   );
+
+  useEffect(() => {
+    if (step === 'characterRunning' && !characterRequested) {
+      setCharacterRequested(true);
+      void runCharacterSync();
+    }
+  }, [step, characterRequested, runCharacterSync]);
+
+  useEffect(() => {
+    if (!hasTriggeredInitialUpdate) {
+      setHasTriggeredInitialUpdate(true);
+      void handleUpdate(false);
+    }
+  }, [hasTriggeredInitialUpdate]);
+
+  const statusLabels: Record<ProgressStatus, string> = useMemo(
+    () => ({
+      pending: 'Pending',
+      running: 'In progress',
+      success: 'Done',
+      error: 'Attention required',
+      skipped: 'Skipped',
+    }),
+    []
+  );
+
+  const statusColors: Record<ProgressStatus, string> = useMemo(
+    () => ({
+      pending: '#757575',
+      running: '#42a5f5',
+      success: '#66bb6a',
+      error: '#ef5350',
+      skipped: '#9e9e9e',
+    }),
+    []
+  );
+
+  const computeProgress = () => {
+    let updateStatus: ProgressStatus = 'pending';
+    let updateProgress = 0;
+    let updateMessage: string | undefined;
+
+    if (step === 'updating') {
+      updateStatus = 'running';
+      updateProgress = 50;
+    }
+
+    if (updateResult) {
+      updateMessage = updateResult.message;
+      if (updateResult.status === 'success' || updateResult.status === 'upToDate') {
+        updateStatus = 'success';
+        updateProgress = 100;
+      } else if (updateResult.status === 'needRetry') {
+        updateStatus = 'error';
+        updateProgress = Math.max(updateProgress, 60);
+      } else if (updateResult.status === 'failed') {
+        updateStatus = 'error';
+        updateProgress = 100;
+      }
+    } else if (step !== 'updating') {
+      if (step === 'updateFailed' && error) {
+        updateStatus = 'error';
+        updateProgress = 100;
+        updateMessage = error;
+      } else if (step !== 'updateRetry') {
+        updateStatus = 'success';
+        updateProgress = 100;
+      }
+    }
+
+    let characterStatus: ProgressStatus = 'pending';
+    let characterProgress = 0;
+    let characterMessage: string | undefined;
+
+    if (step === 'characterRunning') {
+      characterStatus = 'running';
+      characterProgress = 50;
+    }
+
+    if (characterResult) {
+      characterMessage = characterResult.message;
+      characterStatus = characterResult.success ? 'success' : 'error';
+      characterProgress = 100;
+    }
+
+    let serverStatus: ProgressStatus = 'pending';
+    let serverProgress = 0;
+    let serverMessage: string | undefined;
+
+    if (ready) {
+      serverStatus = 'success';
+      serverProgress = 100;
+      serverMessage = `Server ready at ${url}`;
+    } else if (step === 'launching') {
+      if (serverError) {
+        serverStatus = 'error';
+        serverProgress = 100;
+        serverMessage = serverError;
+      } else if (serverRequested) {
+        serverStatus = 'running';
+        serverProgress = 60;
+        serverMessage = 'Starting WeylandTavern...';
+      } else {
+        serverStatus = 'pending';
+        serverProgress = 0;
+      }
+    }
+
+    return {
+      update: { status: updateStatus, progress: updateProgress, message: updateMessage },
+      character: { status: characterStatus, progress: characterProgress, message: characterMessage },
+      server: { status: serverStatus, progress: serverProgress, message: serverMessage },
+    };
+  };
+
+  const StepProgress = ({
+    label,
+    status,
+    progress,
+    message,
+  }: {
+    label: string;
+    status: ProgressStatus;
+    progress: number;
+    message?: string;
+  }) => (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.35rem',
+        textAlign: 'left',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+        <span>{label}</span>
+        <span>{statusLabels[status]}</span>
+      </div>
+      <div
+        style={{
+          height: '0.5rem',
+          width: '100%',
+          borderRadius: '9999px',
+          backgroundColor: '#2c2c2c',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            width: `${progress}%`,
+            backgroundColor: statusColors[status],
+            transition: 'width 0.3s ease',
+          }}
+        />
+      </div>
+      {message && (
+        <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>{message}</span>
+      )}
+    </div>
+  );
+
+  const renderProgress = () => {
+    const { update, character, server } = computeProgress();
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+          width: '100%',
+          maxWidth: '32rem',
+        }}
+      >
+        <StepProgress label="Update" {...update} />
+        <StepProgress label="Character sync" {...character} />
+        <StepProgress label="Server" {...server} />
+      </div>
+    );
+  };
 
   const renderUpdateDetails = () => {
     if (!updateResult || !updateResult.logPath) {
@@ -206,20 +387,6 @@ function App() {
 
   const renderStepContent = () => {
     switch (step) {
-      case 'updatePrompt':
-        return (
-          <>
-            <p>Do you want to check for WeylandTavern updates?</p>
-            <div style={buttonRowStyle}>
-              <button onClick={() => handleUpdate(false)} disabled={isProcessing}>
-                Yes
-              </button>
-              <button onClick={handleSkipUpdate} disabled={isProcessing}>
-                No
-              </button>
-            </div>
-          </>
-        );
       case 'updating':
         return <p>Updating WeylandTavern...</p>;
       case 'updateRetry':
@@ -265,20 +432,6 @@ function App() {
                 Yes
               </button>
               <button onClick={() => void handleFinalizeStash(false)} disabled={isProcessing}>
-                No
-              </button>
-            </div>
-          </>
-        );
-      case 'characterPrompt':
-        return (
-          <>
-            <p>Do you want to check for character updates?</p>
-            <div style={buttonRowStyle}>
-              <button onClick={() => void handleCharacterSync()} disabled={isProcessing}>
-                Yes
-              </button>
-              <button onClick={handleSkipCharacter} disabled={isProcessing}>
                 No
               </button>
             </div>
@@ -345,9 +498,7 @@ function App() {
       }}
     >
       <h1>WeylandTavern Launcher</h1>
-      {updateResult && (updateResult.status === 'success' || updateResult.status === 'upToDate') && (
-        <p>{updateResult.message}</p>
-      )}
+      {renderProgress()}
       {renderStepContent()}
       {error && <p style={{ color: '#ff8a80' }}>{error}</p>}
       <p style={{ fontSize: '0.9rem', opacity: 0.75 }}>
