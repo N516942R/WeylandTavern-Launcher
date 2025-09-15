@@ -32,10 +32,39 @@ use windows::{
     },
 };
 
+#[cfg(windows)]
+struct JobHandle(HANDLE);
+
+#[cfg(windows)]
+impl JobHandle {
+    fn new(handle: HANDLE) -> Self {
+        Self(handle)
+    }
+
+    fn raw(&self) -> HANDLE {
+        self.0
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
+
+#[cfg(windows)]
+unsafe impl Sync for JobHandle {}
+
 struct ServerState {
     child: Mutex<Option<TokioChild>>,
     #[cfg(windows)]
-    job: Mutex<Option<windows::Win32::Foundation::HANDLE>>,
+    job: Mutex<Option<JobHandle>>,
 }
 
 #[derive(Serialize)]
@@ -88,7 +117,7 @@ async fn main() {
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<ServerState>();
-                    shutdown(&state).await;
+                    shutdown(state).await;
                     app.exit(0);
                 });
             }
@@ -340,14 +369,14 @@ async fn run_character_sync(app: AppHandle) -> Result<CharacterResponse, String>
 
 #[tauri::command]
 async fn start_server(app: AppHandle, state: tauri::State<'_, ServerState>) -> Result<(), String> {
-    launch(&app, &state).await
+    launch(&app, state).await
 }
 
-async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Result<(), String> {
+async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result<(), String> {
     load_env();
     let silly_dir = silly_dir()?;
 
-    if state.child.lock().unwrap().is_some() {
+    if state.inner().child.lock().unwrap().is_some() {
         log_line(app, "WeylandTavern is already running.").await;
         return Ok(());
     }
@@ -443,32 +472,25 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
 
     #[cfg(windows)]
     unsafe {
-        let job = CreateJobObjectW(None, PCWSTR::null())
+        let job_handle = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
+        let job = JobHandle::new(job_handle);
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         SetInformationJobObject(
-            job,
+            job.raw(),
             JobObjectExtendedLimitInformation,
             &info as *const _ as *const _,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
-        .map_err(|e| {
-            let _ = CloseHandle(job);
-            format!("SetInformationJobObject failed: {e}")
-        })?;
+        .map_err(|e| format!("SetInformationJobObject failed: {e}"))?;
         let pid = child.id().ok_or("pid unavailable")? as u32;
-        let process = OpenProcess(PROCESS_ALL_ACCESS, false, pid).map_err(|e| {
-            let _ = CloseHandle(job);
-            format!("OpenProcess failed: {e}")
-        })?;
-        AssignProcessToJobObject(job, process).map_err(|e| {
-            let _ = CloseHandle(process);
-            let _ = CloseHandle(job);
-            format!("AssignProcessToJobObject failed: {e}")
-        })?;
+        let process = OpenProcess(PROCESS_ALL_ACCESS, false, pid)
+            .map_err(|e| format!("OpenProcess failed: {e}"))?;
+        let assign_result = AssignProcessToJobObject(job.raw(), process);
         let _ = CloseHandle(process);
-        state.job.lock().unwrap().replace(job);
+        assign_result.map_err(|e| format!("AssignProcessToJobObject failed: {e}"))?;
+        state.inner().job.lock().unwrap().replace(job);
     }
 
     if let Some(stdout) = stdout {
@@ -493,7 +515,7 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
         });
     }
 
-    state.child.lock().unwrap().replace(child);
+    state.inner().child.lock().unwrap().replace(child);
 
     let url = format!("http://{}:{}/", host, port);
     if wait_for_health(&url).await {
@@ -569,9 +591,9 @@ async fn wait_for_health(url: &str) -> bool {
     false
 }
 
-async fn shutdown(state: &tauri::State<'_, ServerState>) {
+async fn shutdown(state: tauri::State<'_, ServerState>) {
     let child = {
-        let mut guard = state.child.lock().unwrap();
+        let mut guard = state.inner().child.lock().unwrap();
         guard.take()
     };
 
@@ -581,26 +603,21 @@ async fn shutdown(state: &tauri::State<'_, ServerState>) {
         #[cfg(windows)]
         {
             if let Some(job) = {
-                let mut guard = state.job.lock().unwrap();
+                let mut guard = state.inner().job.lock().unwrap();
                 guard.take()
             } {
                 unsafe {
-                    let _ = TerminateJobObject(job, 1);
-                    let _ = CloseHandle(job);
+                    let _ = TerminateJobObject(job.raw(), 1);
                 }
             }
         }
     } else {
         #[cfg(windows)]
         {
-            if let Some(job) = {
-                let mut guard = state.job.lock().unwrap();
+            if let Some(_job) = {
+                let mut guard = state.inner().job.lock().unwrap();
                 guard.take()
-            } {
-                unsafe {
-                    let _ = CloseHandle(job);
-                }
-            }
+            } {}
         }
     }
 }
