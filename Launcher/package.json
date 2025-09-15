@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "ui:dev": "vite",
+    "ui:build": "vite build",
     "tauri": "tauri",
     "test": "echo \"no tests\""
   },
