@@ -20,6 +20,12 @@ RUN_CHARACTER_SYNC=false
 UPDATE_SCRIPT=./tools/Update-WeylandTavern.ps1
 ```
 
+The launcher also sets the following environment variables internally to prevent an external browser from opening:
+```
+NO_BROWSER=1
+BROWSER=none
+```
+
 `SILLYTAVERN_DIR` defaults to `./vendor/WeylandTavern/SillyTavern` and the launcher will fail to start if the path does not exist.
 
 ## Usage
@@ -30,6 +36,17 @@ npm run tauri dev
 ```
 
 The launcher performs a preflight check, optionally installs npm packages, starts the SillyTavern server and displays it. Logs are written to `logs/`.
+
+## Security
+
+The Tauri configuration grants only the minimal permissions required:
+
+- `shell.execute` for running commands in `SILLYTAVERN_DIR`
+- `fs.readFile` for reading configuration and logs
+- `path` for resolving application directories
+- `process.exit` for quitting the app
+
+A strict content security policy allows resources from `self` and connections to `http://127.0.0.1:*` only.
 
 ## Troubleshooting
 - Ensure `SILLYTAVERN_DIR` points to a valid SillyTavern checkout.
