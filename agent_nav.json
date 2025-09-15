@@ -1,0 +1,137 @@
+{
+  "goldenArtifacts": [
+    {
+      "path": ".gitignore",
+      "summary": "Keeps generated assets like Launcher/logs, node_modules, dist, and Rust targets out of version control.",
+      "category": "infrastructure"
+    },
+    {
+      "path": ".gitmodules",
+      "summary": "Declares the vendor/WeylandTavern submodule sourced from the upstream nightly branch (shallow clone).",
+      "category": "infrastructure"
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "summary": "Local pre-commit hook preventing accidental commits that change the submodule HEAD.",
+      "category": "infrastructure"
+    },
+    {
+      "path": "Launcher/.env",
+      "summary": "Runtime defaults for vendor paths, server host/port, npm install policy, character sync toggle, and update script path.",
+      "category": "configuration"
+    },
+    {
+      "path": "Launcher/README.md",
+      "summary": "Setup guide covering prerequisites, environment variables, and npm/tauri commands.",
+      "category": "documentation"
+    },
+    {
+      "path": "Launcher/index.html",
+      "summary": "Vite HTML entry shell that loads src/main.tsx into #root.",
+      "category": "frontend"
+    },
+    {
+      "path": "Launcher/package.json",
+      "summary": "NPM manifest declaring scripts and dependencies for the launcher UI and tauri tooling.",
+      "category": "configuration"
+    },
+    {
+      "path": "Launcher/src-tauri/Cargo.lock",
+      "summary": "Pins Rust dependencies for deterministic tauri backend builds.",
+      "category": "backend"
+    },
+    {
+      "path": "Launcher/src-tauri/Cargo.toml",
+      "summary": "Defines the tauri backend crate, dependencies, and Windows-specific features.",
+      "category": "backend"
+    },
+    {
+      "path": "Launcher/src-tauri/build.rs",
+      "summary": "Invokes tauri_build so Tauri generates bindings/resources during compilation.",
+      "category": "backend"
+    },
+    {
+      "path": "Launcher/src-tauri/icons/icon.png",
+      "summary": "Application icon bundled with the desktop app.",
+      "category": "assets"
+    },
+    {
+      "path": "Launcher/src-tauri/src/main.rs",
+      "summary": "Async Tauri commands handling git updates, npm installs, process supervision, logging, and health checks.",
+      "category": "backend"
+    },
+    {
+      "path": "Launcher/src-tauri/tauri.conf.json",
+      "summary": "Tauri application configuration including window dimensions, CSP, and build hooks.",
+      "category": "configuration"
+    },
+    {
+      "path": "Launcher/src/App.tsx",
+      "summary": "React component orchestrating the update prompts, character sync, log overlay, and iframe handoff.",
+      "category": "frontend"
+    },
+    {
+      "path": "Launcher/src/main.tsx",
+      "summary": "React entry point bootstrapping the App component.",
+      "category": "frontend"
+    },
+    {
+      "path": "Launcher/tsconfig.json",
+      "summary": "TypeScript compiler settings targeting ES2020 modules with React JSX and Tauri API types.",
+      "category": "configuration"
+    },
+    {
+      "path": "Launcher/vite.config.ts",
+      "summary": "Vite configuration enabling the React plugin and keeping console output intact.",
+      "category": "frontend"
+    },
+    {
+      "path": "Update-Weyland.bat",
+      "summary": "Windows batch wrapper that runs the PowerShell updater with origin/nightly and PinExact flags.",
+      "category": "automation"
+    },
+    {
+      "path": "tools/Update-WeylandTavern.ps1",
+      "summary": "PowerShell script that fetches/checks out the requested vendor ref and commits the submodule pointer when it changes.",
+      "category": "automation"
+    },
+    {
+      "path": "vendor/WeylandTavern",
+      "summary": "Git submodule containing the SillyTavern payload expected by the launcher.",
+      "category": "vendor"
+    }
+  ],
+  "quickLinks": {
+    "setup": [
+      { "label": "Environment defaults", "path": "Launcher/.env" },
+      { "label": "Project README", "path": "Launcher/README.md" },
+      { "label": "Submodule instructions", "path": "vendor/AGENT_OVERVIEW.md" }
+    ],
+    "frontend": [
+      { "label": "App flow", "path": "Launcher/src/App.tsx" },
+      { "label": "React bootstrap", "path": "Launcher/src/main.tsx" },
+      { "label": "HTML shell", "path": "Launcher/index.html" },
+      { "label": "TypeScript config", "path": "Launcher/tsconfig.json" },
+      { "label": "Vite config", "path": "Launcher/vite.config.ts" }
+    ],
+    "backend": [
+      { "label": "Tauri commands", "path": "Launcher/src-tauri/src/main.rs" },
+      { "label": "Cargo manifest", "path": "Launcher/src-tauri/Cargo.toml" },
+      { "label": "Dependency lockfile", "path": "Launcher/src-tauri/Cargo.lock" },
+      { "label": "Tauri runtime config", "path": "Launcher/src-tauri/tauri.conf.json" }
+    ],
+    "automation": [
+      { "label": "PowerShell updater", "path": "tools/Update-WeylandTavern.ps1" },
+      { "label": "Windows batch helper", "path": "Update-Weyland.bat" },
+      { "label": "Pre-commit guard", "path": ".pre-commit-config.yaml" }
+    ],
+    "reference": [
+      { "label": "Repo overview", "path": "AGENT_OVERVIEW.md" },
+      { "label": "Launcher guide", "path": "Launcher/AGENT_OVERVIEW.md" },
+      { "label": "Frontend guide", "path": "Launcher/src/AGENT_OVERVIEW.md" },
+      { "label": "Backend guide", "path": "Launcher/src-tauri/AGENT_OVERVIEW.md" },
+      { "label": "Backend command map", "path": "Launcher/src-tauri/src/AGENT_OVERVIEW.md" },
+      { "label": "Tools guide", "path": "tools/AGENT_OVERVIEW.md" }
+    ]
+  }
+}
