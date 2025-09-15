@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs as stdfs,
+    env, fs as stdfs,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -24,10 +23,9 @@ use tokio::{
 use windows::{
     Win32::Foundation::{CloseHandle, HANDLE},
     Win32::System::Threading::{
-        AssignProcessToJobObject, CreateJobObjectW, OpenProcess,
-        SetInformationJobObject, TerminateJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JobObjectExtendedLimitInformation, PROCESS_ALL_ACCESS,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, OpenProcess,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, PROCESS_ALL_ACCESS,
     },
 };
 
@@ -71,14 +69,14 @@ async fn main() {
 }
 
 async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Result<(), String> {
-    let _ = from_filename(".env");
+    let _ = from_filename("../.env").or_else(|_| from_filename(".env"));
 
     let silly_dir = PathBuf::from(
         env::var("SILLYTAVERN_DIR").unwrap_or_else(|_| "./vendor/WeylandTavern/SillyTavern".into()),
     );
     if !silly_dir.exists() {
         return Err(format!(
-            "SILLYTAVERN_DIR not found: {}",
+            "SILLYTAVERN_DIR does not exist at {}. Set SILLYTAVERN_DIR in .env",
             silly_dir.display()
         ));
     }
@@ -91,7 +89,7 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
 
     let run_npm = env::var("RUN_NPM_INSTALL").unwrap_or_else(|_| "auto".into());
     let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "ci".into());
-    if should_npm_install(&run_npm, &npm_mode, &silly_dir)? {
+    if should_npm_install(&run_npm, &silly_dir)? {
         let mut cmd = Command::new("npm");
         cmd.current_dir(&silly_dir);
         if npm_mode == "ci" {
@@ -246,7 +244,7 @@ async fn log_line(app: &AppHandle, line: &str) {
     let _ = app.emit_all("log", line.to_string());
 }
 
-fn should_npm_install(mode: &str, _npm_mode: &str, dir: &PathBuf) -> Result<bool, String> {
+fn should_npm_install(mode: &str, dir: &PathBuf) -> Result<bool, String> {
     if mode == "never" {
         return Ok(false);
     }
@@ -315,13 +313,17 @@ async fn shutdown(state: &tauri::State<'_, ServerState>) {
         } else {
             #[cfg(windows)]
             if let Some(job) = state.job.lock().unwrap().take() {
-                unsafe { CloseHandle(job); }
+                unsafe {
+                    CloseHandle(job);
+                }
             }
         }
     } else {
         #[cfg(windows)]
         if let Some(job) = state.job.lock().unwrap().take() {
-            unsafe { CloseHandle(job); }
+            unsafe {
+                CloseHandle(job);
+            }
         }
     }
 }

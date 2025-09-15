@@ -20,6 +20,8 @@ RUN_CHARACTER_SYNC=false
 UPDATE_SCRIPT=./tools/Update-WeylandTavern.ps1
 ```
 
+`SILLYTAVERN_DIR` defaults to `./vendor/WeylandTavern/SillyTavern` and the launcher will fail to start if the path does not exist.
+
 ## Usage
 
 ```sh
