@@ -1,10 +1,23 @@
-use std::{env, fs as stdfs, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
+use std::{
+    env, fs as stdfs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::Local;
 use dotenvy::from_filename;
-use tauri::{api::process::{Command, CommandChild, CommandEvent, Signal}, Manager, AppHandle};
 use std::process::Stdio;
-use tokio::{fs::{self as tokio_fs, OpenOptions}, io::AsyncWriteExt, sync::Mutex as AsyncMutex, time::sleep};
+use tauri::{
+    api::process::{Command, CommandChild, CommandEvent, Signal},
+    AppHandle, Manager,
+};
+use tokio::{
+    fs::{self as tokio_fs, OpenOptions},
+    io::AsyncWriteExt,
+    sync::Mutex as AsyncMutex,
+    time::sleep,
+};
 
 struct ServerState {
     child: Mutex<Option<CommandChild>>,
@@ -44,9 +57,14 @@ async fn main() {
 async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Result<(), String> {
     let _ = from_filename(".env");
 
-    let silly_dir = PathBuf::from(env::var("SILLYTAVERN_DIR").unwrap_or_else(|_| "./vendor/WeylandTavern/SillyTavern".into()));
+    let silly_dir = PathBuf::from(
+        env::var("SILLYTAVERN_DIR").unwrap_or_else(|_| "./vendor/WeylandTavern/SillyTavern".into()),
+    );
     if !silly_dir.exists() {
-        return Err(format!("SILLYTAVERN_DIR not found: {}", silly_dir.display()));
+        return Err(format!(
+            "SILLYTAVERN_DIR not found: {}",
+            silly_dir.display()
+        ));
     }
 
     for bin in ["node", "npm"] {
@@ -77,6 +95,10 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
             let mut cmd = Command::new("node");
             cmd.current_dir(&silly_dir);
             cmd.args(["character-downloader.js", &url, "-u"]);
+            cmd.env("NODE_ENV", "production");
+            cmd.env("NO_BROWSER", "1");
+            cmd.env("BROWSER", "none");
+
             if cmd.status().await.is_err() {
                 log_line(app, "character sync failed").await;
             }
@@ -86,19 +108,48 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
     }
 
     let host = env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = env::var("SERVER_PORT").unwrap_or_else(|_| "8000".into()).parse().unwrap_or(8000);
-    let args = env::var("SERVER_ARGS").unwrap_or_default();
+    let port: u16 = env::var("SERVER_PORT")
+        .unwrap_or_else(|_| "8000".into())
+        .parse()
+        .unwrap_or(8000);
+    let mut args: Vec<String> = env::var("SERVER_ARGS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    if !args.iter().any(|a| a == "--no-open") {
+        args.push("--no-open".into());
+    }
 
     let logs_dir = PathBuf::from("logs");
-    tokio_fs::create_dir_all(&logs_dir).await.map_err(|e| e.to_string())?;
+    tokio_fs::create_dir_all(&logs_dir)
+        .await
+        .map_err(|e| e.to_string())?;
     let log_path = logs_dir.join(format!("server-{}.log", Local::now().format("%Y%m%d")));
-    let file = Arc::new(AsyncMutex::new(OpenOptions::new().create(true).append(true).open(&log_path).await.map_err(|e| e.to_string())?));
+    let file = Arc::new(AsyncMutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .await
+            .map_err(|e| e.to_string())?,
+    ));
 
     let mut cmd = Command::new("node");
     cmd.current_dir(&silly_dir);
     cmd.env("NODE_ENV", "production");
-    cmd.args(["server.js", "--listen", "true", "--listen-host", "0.0.0.0", "--listen-port", &port.to_string()]);
-    for a in args.split_whitespace() {
+    cmd.env("NO_BROWSER", "1");
+    cmd.env("BROWSER", "none");
+    cmd.args([
+        "server.js",
+        "--listen",
+        "true",
+        "--listen-host",
+        "0.0.0.0",
+        "--listen-port",
+        &port.to_string(),
+    ]);
+    for a in args {
         cmd.arg(a);
     }
     cmd.stdout(Stdio::piped());
@@ -128,7 +179,11 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
     Ok(())
 }
 
-async fn append_log(app: &AppHandle, file: &Arc<AsyncMutex<tokio::fs::File>>, line: &str) -> Result<(), ()> {
+async fn append_log(
+    app: &AppHandle,
+    file: &Arc<AsyncMutex<tokio::fs::File>>,
+    line: &str,
+) -> Result<(), ()> {
     let mut f = file.lock().await;
     let _ = f.write_all(line.as_bytes()).await;
     let _ = f.write_all(b"\n").await;
@@ -153,8 +208,14 @@ fn should_npm_install(mode: &str, _npm_mode: &str, dir: &PathBuf) -> Result<bool
     }
     let lock_file = dir.join("package-lock.json");
     if lock_file.exists() {
-        let lm = stdfs::metadata(&lock_file).map_err(|e| e.to_string())?.modified().map_err(|e| e.to_string())?;
-        let nm = stdfs::metadata(&node_modules).map_err(|e| e.to_string())?.modified().map_err(|e| e.to_string())?;
+        let lm = stdfs::metadata(&lock_file)
+            .map_err(|e| e.to_string())?
+            .modified()
+            .map_err(|e| e.to_string())?;
+        let nm = stdfs::metadata(&node_modules)
+            .map_err(|e| e.to_string())?
+            .modified()
+            .map_err(|e| e.to_string())?;
         return Ok(lm > nm);
     }
     Ok(false)
@@ -163,7 +224,13 @@ fn should_npm_install(mode: &str, _npm_mode: &str, dir: &PathBuf) -> Result<bool
 async fn wait_for_health(url: &str) -> bool {
     let client = reqwest::Client::new();
     for i in 0..30u64 {
-        if client.get(url).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if client
+            .get(url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             return true;
         }
         sleep(Duration::from_millis(500 + i * 100)).await;
@@ -177,9 +244,11 @@ async fn shutdown(state: &tauri::State<'_, ServerState>) {
         let _ = child.signal(Signal::CtrlBreak);
         #[cfg(not(windows))]
         let _ = child.signal(Signal::Sigint);
-        if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .is_err()
+        {
             let _ = child.kill();
         }
     }
 }
-
