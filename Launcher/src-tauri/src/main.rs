@@ -1,5 +1,6 @@
 use std::{
-    env, fs as stdfs,
+    env,
+    fs as stdfs,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -19,8 +20,21 @@ use tokio::{
     time::sleep,
 };
 
+#[cfg(windows)]
+use windows::{
+    Win32::Foundation::{CloseHandle, HANDLE},
+    Win32::System::Threading::{
+        AssignProcessToJobObject, CreateJobObjectW, OpenProcess,
+        SetInformationJobObject, TerminateJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JobObjectExtendedLimitInformation, PROCESS_ALL_ACCESS,
+    },
+};
+
 struct ServerState {
     child: Mutex<Option<CommandChild>>,
+    #[cfg(windows)]
+    job: Mutex<Option<windows::Win32::Foundation::HANDLE>>,
 }
 
 #[tokio::main]
@@ -28,6 +42,8 @@ async fn main() {
     tauri::Builder::default()
         .manage(ServerState {
             child: Mutex::new(None),
+            #[cfg(windows)]
+            job: Mutex::new(None),
         })
         .setup(|app| {
             let app_handle = app.handle();
@@ -154,7 +170,42 @@ async fn launch(app: &AppHandle, state: &tauri::State<'_, ServerState>) -> Resul
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let (mut rx, child) = cmd.spawn().map_err(|e| e.to_string())?;
+    let (mut rx, mut child) = cmd.spawn().map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    unsafe {
+        let job = CreateJobObjectW(None, None);
+        if job.is_invalid() {
+            return Err("CreateJobObjectW failed".into());
+        }
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if !SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .as_bool()
+        {
+            CloseHandle(job);
+            return Err("SetInformationJobObject failed".into());
+        }
+        let pid = child.pid().ok_or("pid unavailable")? as u32;
+        let process = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+        if process.is_invalid() {
+            CloseHandle(job);
+            return Err("OpenProcess failed".into());
+        }
+        if !AssignProcessToJobObject(job, process).as_bool() {
+            CloseHandle(process);
+            CloseHandle(job);
+            return Err("AssignProcessToJobObject failed".into());
+        }
+        CloseHandle(process);
+        state.job.lock().unwrap().replace(job);
+    }
+
     state.child.lock().unwrap().replace(child);
 
     let app_for_logs = app.clone();
@@ -248,7 +299,29 @@ async fn shutdown(state: &tauri::State<'_, ServerState>) {
             .await
             .is_err()
         {
-            let _ = child.kill();
+            #[cfg(windows)]
+            {
+                if let Some(job) = state.job.lock().unwrap().take() {
+                    unsafe {
+                        TerminateJobObject(job, 1);
+                        CloseHandle(job);
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = child.kill();
+            }
+        } else {
+            #[cfg(windows)]
+            if let Some(job) = state.job.lock().unwrap().take() {
+                unsafe { CloseHandle(job); }
+            }
+        }
+    } else {
+        #[cfg(windows)]
+        if let Some(job) = state.job.lock().unwrap().take() {
+            unsafe { CloseHandle(job); }
         }
     }
 }
