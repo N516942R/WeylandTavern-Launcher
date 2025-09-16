@@ -26,7 +26,11 @@
             "*"
           ],
           "permissions": [
-            "core:default"
+            "core:default",
+            "path:default",
+            "process:default",
+            "shell:default",
+            "fs:readFile"
           ]
         }
       ]
