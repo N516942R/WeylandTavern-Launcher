@@ -1,5 +1,7 @@
 use std::{
-    env, fs as stdfs,
+    env,
+    ffi::{OsStr, OsString},
+    fs as stdfs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -67,6 +69,12 @@ struct ServerState {
     job: Mutex<Option<JobHandle>>,
 }
 
+#[cfg(windows)]
+const NPM_CANDIDATES: &[&str] = &["npm.cmd", "npm"];
+
+#[cfg(not(windows))]
+const NPM_CANDIDATES: &[&str] = &["npm"];
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 enum UpdateStatus {
@@ -91,6 +99,24 @@ struct UpdateResponse {
 struct CharacterResponse {
     success: bool,
     message: String,
+}
+
+enum NpmTool {
+    Binary(OsString),
+    Script(PathBuf),
+}
+
+impl NpmTool {
+    fn into_command(self) -> TokioCommand {
+        match self {
+            Self::Binary(bin) => TokioCommand::new(bin),
+            Self::Script(path) => {
+                let mut cmd = TokioCommand::new("node");
+                cmd.arg(path.as_os_str());
+                cmd
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -400,16 +426,92 @@ async fn start_server(app: AppHandle, state: tauri::State<'_, ServerState>) -> R
     launch(&app, state).await
 }
 
-async fn ensure_command(bin: &str) -> Result<(), String> {
-    if TokioCommand::new(bin)
+async fn command_exists(program: &OsStr) -> bool {
+    TokioCommand::new(program.to_os_string())
         .arg("--version")
         .status()
         .await
-        .is_err()
-    {
-        Err(format!("{} not found", bin))
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+async fn locate_npm(app: &AppHandle) -> Result<NpmTool, String> {
+    if let Some(custom) = env::var_os("NPM_BIN").filter(|value| !value.is_empty()) {
+        if command_exists(custom.as_os_str()).await {
+            let location = PathBuf::from(&custom);
+            log_line(
+                app,
+                &format!(
+                    "Using npm from {} as configured via NPM_BIN.",
+                    location.display()
+                ),
+            )
+            .await;
+            return Ok(NpmTool::Binary(custom));
+        } else {
+            let location = PathBuf::from(&custom);
+            return Err(format!(
+                "Configured NPM_BIN at {} is not executable. Install npm or update NPM_BIN.",
+                location.display()
+            ));
+        }
+    }
+
+    for candidate in NPM_CANDIDATES {
+        if command_exists(OsStr::new(candidate)).await {
+            return Ok(NpmTool::Binary(OsString::from(candidate)));
+        }
+    }
+
+    log_line(
+        app,
+        "npm executable not found on PATH; attempting to use the npm-cli.js bundled with Node.",
+    )
+    .await;
+
+    let output = TokioCommand::new("node")
+        .args(["-p", "require.resolve('npm/bin/npm-cli.js')"])
+        .output()
+        .await
+        .map_err(|e| format!("Unable to locate npm via node: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let script = stdout.trim();
+
+    if output.status.success() && !script.is_empty() {
+        let path = PathBuf::from(script);
+        log_line(
+            app,
+            &format!(
+                "Resolved npm-cli.js at {}. Falling back to running npm via node.",
+                path.display()
+            ),
+        )
+        .await;
+        Ok(NpmTool::Script(path))
     } else {
-        Ok(())
+        let mut message = String::from(
+            "npm not found. Install Node.js (which includes npm) or set NPM_BIN to the npm executable path.",
+        );
+        let details = stderr.trim();
+        if !details.is_empty() {
+            message.push(' ');
+            message.push_str(details);
+        }
+        Err(message)
+    }
+}
+
+async fn ensure_command(bin: &str) -> Result<(), String> {
+    match TokioCommand::new(bin).arg("--version").status().await {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(match status.code() {
+            Some(code) => format!("{bin} --version exited with status {code}"),
+            None => format!("{bin} --version failed"),
+        }),
+        Err(err) => Err(format!(
+            "{bin} not found. Install {bin} and ensure it is on your PATH. ({err})"
+        )),
     }
 }
 
@@ -428,9 +530,10 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
     ensure_command("node").await?;
 
     if needs_npm_install {
-        ensure_command("npm").await?;
+        let npm_tool = locate_npm(app).await?;
         let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
-        let mut cmd = TokioCommand::new("npm");
+        let mut cmd = npm_tool.into_command();
+      
         cmd.current_dir(&silly_dir);
         cmd.env("NODE_ENV", "production");
         if npm_mode == "ci" {
