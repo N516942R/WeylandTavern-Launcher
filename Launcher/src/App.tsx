@@ -21,29 +21,33 @@ interface CharacterResponse {
 }
 
 type Step =
-  | 'updating'
-  | 'updateRetry'
-  | 'updateFailed'
+  | 'updatePrompt'
+  | 'updateRunning'
   | 'stashPrompt'
+  | 'characterPrompt'
   | 'characterRunning'
   | 'launching';
 
 type ProgressStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped';
+
+const UPDATE_SKIP_MESSAGE = 'Vendor update skipped by user.';
+const CHARACTER_SKIP_MESSAGE = 'Character sync skipped by user.';
 
 function App() {
   const [ready, setReady] = useState(false);
   const [url, setUrl] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [showLogs, setShowLogs] = useState(false);
-  const [step, setStep] = useState<Step>('updating');
+  const [step, setStep] = useState<Step>('updatePrompt');
   const [updateResult, setUpdateResult] = useState<UpdateResponse | null>(null);
+  const [updateSkipped, setUpdateSkipped] = useState(false);
+  const [updateErrorMessage, setUpdateErrorMessage] = useState<string | null>(null);
   const [characterResult, setCharacterResult] = useState<CharacterResponse | null>(null);
+  const [characterSkipped, setCharacterSkipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverRequested, setServerRequested] = useState(false);
-  const [characterRequested, setCharacterRequested] = useState(false);
-  const [hasTriggeredInitialUpdate, setHasTriggeredInitialUpdate] = useState(false);
 
   useEffect(() => {
     const unlistenReady = listen<string>('server-ready', (e) => {
@@ -65,6 +69,7 @@ function App() {
         void appWindow.close();
       }
     };
+
     window.addEventListener('keydown', handler);
 
     return () => {
@@ -78,60 +83,42 @@ function App() {
     if (step === 'launching' && !serverRequested) {
       setServerRequested(true);
       setServerError(null);
-      void invoke('start_server')
-        .catch((err) => {
-          setServerError(err instanceof Error ? err.message : String(err));
-        });
+      void invoke('start_server').catch((err) => {
+        setServerError(err instanceof Error ? err.message : String(err));
+      });
     }
   }, [step, serverRequested]);
 
-  const handleUpdate = async (attemptOverwrite: boolean) => {
+  const handleRunVendorUpdate = async () => {
     setError(null);
+    setUpdateErrorMessage(null);
+    setUpdateSkipped(false);
+    setUpdateResult(null);
     setIsProcessing(true);
-    setStep('updating');
+    setStep('updateRunning');
     try {
-      const result = await invoke<UpdateResponse>('update_vendor', { attemptOverwrite });
+      const result = await invoke<UpdateResponse>('update_vendor', { attemptOverwrite: true });
       setUpdateResult(result);
-      if (result.status === 'success' || result.status === 'upToDate') {
-        if (result.stashUsed) {
-          setStep('stashPrompt');
-        } else {
-          setCharacterResult(null);
-          setCharacterRequested(false);
-          setStep('characterRunning');
-        }
-      } else if (result.status === 'needRetry') {
-        setStep('updateRetry');
+      if (result.stashUsed) {
+        setStep('stashPrompt');
       } else {
-        setStep('updateFailed');
+        setStep('characterPrompt');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setStep('updateFailed');
+      const message = err instanceof Error ? err.message : String(err);
+      setUpdateErrorMessage(message);
+      setStep('characterPrompt');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleRetryWithOverwrite = () => {
-    void handleUpdate(true);
-  };
-
-  const handleSkipAfterFailure = () => {
-    setUpdateResult((prev) =>
-      prev ? { ...prev, message: 'WeylandTavern failed to update.' } : prev
-    );
-    setStep('updateFailed');
-  };
-
-  const handleStartAnyway = () => {
-    setCharacterResult(null);
-    setCharacterRequested(false);
-    setStep('characterRunning');
-  };
-
-  const handleExit = () => {
-    void appWindow.close();
+  const handleSkipUpdate = () => {
+    setError(null);
+    setUpdateErrorMessage(null);
+    setUpdateResult(null);
+    setUpdateSkipped(true);
+    setStep('characterPrompt');
   };
 
   const handleFinalizeStash = async (revert: boolean) => {
@@ -139,9 +126,7 @@ function App() {
     setIsProcessing(true);
     try {
       await invoke('finalize_stash', { revert });
-      setCharacterResult(null);
-      setCharacterRequested(false);
-      setStep('characterRunning');
+      setStep('characterPrompt');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -151,7 +136,6 @@ function App() {
 
   const runCharacterSync = useCallback(async () => {
     setError(null);
-    setCharacterResult(null);
     setIsProcessing(true);
     try {
       const result = await invoke<CharacterResponse>('run_character_sync');
@@ -163,10 +147,26 @@ function App() {
       });
     } finally {
       setIsProcessing(false);
-      setCharacterRequested(false);
       setStep('launching');
     }
   }, []);
+
+  const handleRunCharacter = () => {
+    setCharacterSkipped(false);
+    setCharacterResult(null);
+    setStep('characterRunning');
+    void runCharacterSync();
+  };
+
+  const handleSkipCharacter = () => {
+    setCharacterSkipped(true);
+    setCharacterResult({ success: true, message: CHARACTER_SKIP_MESSAGE });
+    setStep('launching');
+  };
+
+  const handleExit = () => {
+    void appWindow.close();
+  };
 
   const retryServer = () => {
     setServerError(null);
@@ -177,20 +177,6 @@ function App() {
     () => ({ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' as const }),
     []
   );
-
-  useEffect(() => {
-    if (step === 'characterRunning' && !characterRequested) {
-      setCharacterRequested(true);
-      void runCharacterSync();
-    }
-  }, [step, characterRequested, runCharacterSync]);
-
-  useEffect(() => {
-    if (!hasTriggeredInitialUpdate) {
-      setHasTriggeredInitialUpdate(true);
-      void handleUpdate(false);
-    }
-  }, [hasTriggeredInitialUpdate]);
 
   const statusLabels: Record<ProgressStatus, string> = useMemo(
     () => ({
@@ -219,32 +205,32 @@ function App() {
     let updateProgress = 0;
     let updateMessage: string | undefined;
 
-    if (step === 'updating') {
+    if (step === 'updateRunning') {
       updateStatus = 'running';
       updateProgress = 50;
+      updateMessage = 'Updating WeylandTavern...';
     }
 
-    if (updateResult) {
+    if (updateSkipped) {
+      updateStatus = 'skipped';
+      updateProgress = 100;
+      updateMessage = UPDATE_SKIP_MESSAGE;
+    } else if (updateResult) {
       updateMessage = updateResult.message;
       if (updateResult.status === 'success' || updateResult.status === 'upToDate') {
         updateStatus = 'success';
         updateProgress = 100;
-      } else if (updateResult.status === 'needRetry') {
-        updateStatus = 'error';
-        updateProgress = Math.max(updateProgress, 60);
-      } else if (updateResult.status === 'failed') {
+      } else if (updateResult.status === 'needRetry' || updateResult.status === 'failed') {
         updateStatus = 'error';
         updateProgress = 100;
       }
-    } else if (step !== 'updating') {
-      if (step === 'updateFailed' && error) {
-        updateStatus = 'error';
-        updateProgress = 100;
-        updateMessage = error;
-      } else if (step !== 'updateRetry') {
-        updateStatus = 'success';
-        updateProgress = 100;
-      }
+    } else if (updateErrorMessage) {
+      updateStatus = 'error';
+      updateProgress = 100;
+      updateMessage = updateErrorMessage;
+    } else if (step !== 'updatePrompt' && step !== 'updateRunning') {
+      updateStatus = 'success';
+      updateProgress = 100;
     }
 
     let characterStatus: ProgressStatus = 'pending';
@@ -254,11 +240,19 @@ function App() {
     if (step === 'characterRunning') {
       characterStatus = 'running';
       characterProgress = 50;
+      characterMessage = 'Checking for character updates...';
     }
 
-    if (characterResult) {
+    if (characterSkipped) {
+      characterStatus = 'skipped';
+      characterProgress = 100;
+      characterMessage = characterResult?.message ?? CHARACTER_SKIP_MESSAGE;
+    } else if (characterResult) {
       characterMessage = characterResult.message;
       characterStatus = characterResult.success ? 'success' : 'error';
+      characterProgress = 100;
+    } else if (step === 'launching' || ready) {
+      characterStatus = 'success';
       characterProgress = 100;
     }
 
@@ -387,52 +381,52 @@ function App() {
 
   const renderStepContent = () => {
     switch (step) {
-      case 'updating':
+      case 'updatePrompt':
+        return (
+          <>
+            <p>Run Vendor Update?</p>
+            <div style={buttonRowStyle}>
+              <button onClick={handleRunVendorUpdate} disabled={isProcessing}>
+                Yes
+              </button>
+              <button onClick={handleSkipUpdate} disabled={isProcessing}>
+                No
+              </button>
+              <button onClick={handleExit} disabled={isProcessing}>
+                Exit
+              </button>
+            </div>
+          </>
+        );
+      case 'updateRunning':
         return <p>Updating WeylandTavern...</p>;
-      case 'updateRetry':
-        return (
-          <>
-            <p>There was an error updating WeylandTavern.</p>
-            {renderUpdateDetails()}
-            <div style={buttonRowStyle}>
-              <button onClick={handleRetryWithOverwrite} disabled={isProcessing}>
-                Retry with overwrite
-              </button>
-              <button onClick={handleSkipAfterFailure} disabled={isProcessing}>
-                Skip update
-              </button>
-              <button onClick={handleExit} disabled={isProcessing}>
-                Exit
-              </button>
-            </div>
-          </>
-        );
-      case 'updateFailed':
-        return (
-          <>
-            <p>{updateResult?.message ?? 'WeylandTavern failed to update.'}</p>
-            <p>Start WeylandTavern anyway?</p>
-            {renderUpdateDetails()}
-            <div style={buttonRowStyle}>
-              <button onClick={handleStartAnyway} disabled={isProcessing}>
-                Start anyway
-              </button>
-              <button onClick={handleExit} disabled={isProcessing}>
-                Exit
-              </button>
-            </div>
-          </>
-        );
       case 'stashPrompt':
         return (
           <>
-            <p>Revert differing files post update?</p>
+            <p>Restore stashed changes?</p>
             <div style={buttonRowStyle}>
               <button onClick={() => void handleFinalizeStash(true)} disabled={isProcessing}>
                 Yes
               </button>
               <button onClick={() => void handleFinalizeStash(false)} disabled={isProcessing}>
                 No
+              </button>
+            </div>
+          </>
+        );
+      case 'characterPrompt':
+        return (
+          <>
+            <p>Run Character Updater?</p>
+            <div style={buttonRowStyle}>
+              <button onClick={handleRunCharacter} disabled={isProcessing}>
+                Yes
+              </button>
+              <button onClick={handleSkipCharacter} disabled={isProcessing}>
+                No
+              </button>
+              <button onClick={handleExit} disabled={isProcessing}>
+                Exit
               </button>
             </div>
           </>
@@ -444,7 +438,15 @@ function App() {
           <>
             <p>Starting WeylandTavern...</p>
             {characterResult && (
-              <p style={{ marginTop: '0.5rem' }}>{characterResult.message}</p>
+              <p
+                style={{
+                  marginTop: '0.5rem',
+                  color:
+                    characterResult.success || characterSkipped ? 'inherit' : '#ff8a80',
+                }}
+              >
+                {characterResult.message}
+              </p>
             )}
             {serverError && (
               <div style={{ marginTop: '1rem' }}>
@@ -500,9 +502,11 @@ function App() {
       <h1>WeylandTavern Launcher</h1>
       {renderProgress()}
       {renderStepContent()}
+      {renderUpdateDetails()}
       {error && <p style={{ color: '#ff8a80' }}>{error}</p>}
       <p style={{ fontSize: '0.9rem', opacity: 0.75 }}>
-        Use <kbd>Ctrl</kbd>+<kbd>L</kbd> to toggle logs, <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload, and <kbd>Ctrl</kbd>+<kbd>Q</kbd> to quit.
+        Use <kbd>Ctrl</kbd>+<kbd>L</kbd> to toggle logs, <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload, and <kbd>Ctrl</kbd>+<kbd>Q</kbd>{' '}
+        to quit.
       </p>
       {showLogs && (
         <div
