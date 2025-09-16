@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tauri = { version = "2" }
+tauri = { version = "2", features = [] }
 dotenvy = "0.15"
 tokio = { version = "1", features = ["process", "io-util", "macros", "signal", "time"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

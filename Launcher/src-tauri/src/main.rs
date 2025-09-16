@@ -533,6 +533,7 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
         let npm_tool = locate_npm(app).await?;
         let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
         let mut cmd = npm_tool.into_command();
+      
         cmd.current_dir(&silly_dir);
         cmd.env("NODE_ENV", "production");
         if npm_mode == "ci" {
