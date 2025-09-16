@@ -4382,6 +4382,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dotenvy",
+ "libc",
  "reqwest 0.11.27",
  "serde",
  "tauri",

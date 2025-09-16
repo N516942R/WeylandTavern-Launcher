@@ -2,13 +2,14 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs as stdfs,
+    net::TcpListener,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use chrono::Local;
-use dotenvy::from_filename;
+use dotenvy::{from_filename, from_path_iter};
 use serde::Serialize;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, Manager};
@@ -19,6 +20,12 @@ use tokio::{
     sync::Mutex as AsyncMutex,
     time::sleep,
 };
+
+#[cfg(unix)]
+use tokio::process::unix::CommandExt;
+
+#[cfg(not(windows))]
+use tokio::time::timeout;
 
 #[cfg(windows)]
 use windows::{
@@ -75,6 +82,8 @@ const NPM_CANDIDATES: &[&str] = &["npm.cmd", "npm"];
 #[cfg(not(windows))]
 const NPM_CANDIDATES: &[&str] = &["npm"];
 
+const FALLBACK_PORTS: &[u16] = &[8000, 8080, 3000, 5173];
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 enum UpdateStatus {
@@ -117,6 +126,12 @@ impl NpmTool {
             }
         }
     }
+}
+
+fn apply_node_env(cmd: &mut TokioCommand) {
+    cmd.env("NODE_ENV", "production");
+    cmd.env("NO_BROWSER", "1");
+    cmd.env("BROWSER", "none");
 }
 
 #[tokio::main]
@@ -392,9 +407,7 @@ async fn run_character_sync(app: AppHandle) -> Result<CharacterResponse, String>
     log_line(&app, "Checking for character updates...").await;
     let mut cmd = TokioCommand::new("node");
     cmd.current_dir(&silly);
-    cmd.env("NODE_ENV", "production");
-    cmd.env("NO_BROWSER", "1");
-    cmd.env("BROWSER", "none");
+    apply_node_env(&mut cmd);
     cmd.args(["character-downloader.js", &url, "-u"]);
 
     let output = cmd.output().await.map_err(|e| e.to_string())?;
@@ -469,7 +482,9 @@ async fn locate_npm(app: &AppHandle) -> Result<NpmTool, String> {
     )
     .await;
 
-    let output = TokioCommand::new("node")
+    let mut node_cmd = TokioCommand::new("node");
+    apply_node_env(&mut node_cmd);
+    let output = node_cmd
         .args(["-p", "require.resolve('npm/bin/npm-cli.js')"])
         .output()
         .await
@@ -524,21 +539,31 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
         return Ok(());
     }
 
-    let run_npm = env::var("RUN_NPM_INSTALL").unwrap_or_else(|_| "always".into());
+    let run_npm = env::var("RUN_NPM_INSTALL").unwrap_or_else(|_| "auto".into());
+    let run_npm = run_npm.trim().to_ascii_lowercase();
     let needs_npm_install = should_npm_install(&run_npm, &silly_dir)?;
 
     ensure_command("node").await?;
 
     if needs_npm_install {
         let npm_tool = locate_npm(app).await?;
-        let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
+        let npm_mode_raw = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
+        let npm_mode = npm_mode_raw.trim().to_ascii_lowercase();
+        let lock_exists = silly_dir.join("package-lock.json").exists();
         let mut cmd = npm_tool.into_command();
-      
+
         cmd.current_dir(&silly_dir);
-        cmd.env("NODE_ENV", "production");
-        if npm_mode == "ci" {
+        apply_node_env(&mut cmd);
+        if npm_mode == "ci" && lock_exists {
             cmd.arg("ci");
         } else {
+            if npm_mode == "ci" && !lock_exists {
+                log_line(
+                    app,
+                    "package-lock.json missing; falling back to npm install.",
+                )
+                .await;
+            }
             cmd.args([
                 "install",
                 "--no-audit",
@@ -555,15 +580,24 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
     }
 
     let host = env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = env::var("SERVER_PORT")
-        .unwrap_or_else(|_| "8000".into())
-        .parse()
-        .unwrap_or(8000);
+    let port = determine_port(&silly_dir, &host)?;
     let mut args: Vec<String> = env::var("SERVER_ARGS")
         .unwrap_or_default()
         .split_whitespace()
         .map(|s| s.to_string())
         .collect();
+    if !args.iter().any(|a| a == "--listen") {
+        args.push("--listen".into());
+        args.push("true".into());
+    }
+    if !args.iter().any(|a| a == "--listen-host") {
+        args.push("--listen-host".into());
+        args.push(host.clone());
+    }
+    if !args.iter().any(|a| a == "--listen-port") {
+        args.push("--listen-port".into());
+        args.push(port.to_string());
+    }
     if !args.iter().any(|a| a == "--no-open") {
         args.push("--no-open".into());
     }
@@ -586,20 +620,17 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
 
     let mut cmd = TokioCommand::new("node");
     cmd.current_dir(&silly_dir);
-    cmd.env("NODE_ENV", "production");
-    cmd.env("NO_BROWSER", "1");
-    cmd.env("BROWSER", "none");
-    cmd.args([
-        "server.js",
-        "--listen",
-        "true",
-        "--listen-host",
-        "0.0.0.0",
-        "--listen-port",
-        &port.to_string(),
-    ]);
-    for a in args {
-        cmd.arg(a);
+    apply_node_env(&mut cmd);
+    let port_env = port.to_string();
+    cmd.env("PORT", &port_env);
+    cmd.env("ST_PORT", &port_env);
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+    cmd.arg("server.js");
+    for arg in args {
+        cmd.arg(arg);
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -691,6 +722,87 @@ async fn log_line(app: &AppHandle, line: &str) {
     let _ = app.emit("log", line.to_string());
 }
 
+fn parse_port(value: &str) -> Option<u16> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+fn silly_env_port(silly_dir: &Path) -> Result<Option<u16>, String> {
+    let env_path = silly_dir.join(".env");
+    if !env_path.exists() {
+        return Ok(None);
+    }
+
+    let iter = from_path_iter(&env_path)
+        .map_err(|e| format!("Failed to read {}: {e}", env_path.display()))?;
+
+    let mut port: Option<u16> = None;
+    let mut st_port: Option<u16> = None;
+
+    for entry in iter {
+        let (key, value) =
+            entry.map_err(|e| format!("Failed to parse {}: {e}", env_path.display()))?;
+        let key = match key.into_string() {
+            Ok(key) => key,
+            Err(_) => continue,
+        };
+        let value = match value.into_string() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        match key.as_str() {
+            "PORT" => {
+                if let Some(parsed) = parse_port(&value) {
+                    port = Some(parsed);
+                }
+            }
+            "ST_PORT" => {
+                if let Some(parsed) = parse_port(&value) {
+                    st_port = Some(parsed);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(port.or(st_port))
+}
+
+fn is_port_available(host: &str, port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+
+    TcpListener::bind((host, port))
+        .map(|listener| drop(listener))
+        .is_ok()
+}
+
+fn determine_port(silly_dir: &Path, host: &str) -> Result<u16, String> {
+    if let Some(port) = silly_env_port(silly_dir)? {
+        return Ok(port);
+    }
+
+    if let Some(port) = env::var("SERVER_PORT")
+        .ok()
+        .and_then(|value| parse_port(&value))
+    {
+        return Ok(port);
+    }
+
+    for candidate in FALLBACK_PORTS {
+        if is_port_available(host, *candidate) {
+            return Ok(*candidate);
+        }
+    }
+
+    Err("Unable to determine an available server port.".into())
+}
+
 fn should_npm_install(mode: &str, dir: &PathBuf) -> Result<bool, String> {
     if mode == "never" {
         return Ok(false);
@@ -734,33 +846,71 @@ async fn wait_for_health(url: &str) -> bool {
     false
 }
 
+#[cfg(windows)]
+async fn terminate_process_tree(mut child: TokioChild, job: Option<JobHandle>) {
+    if let Some(job) = job {
+        unsafe {
+            let _ = TerminateJobObject(job.raw(), 1);
+        }
+    } else {
+        let _ = child.kill().await;
+    }
+    let _ = child.wait().await;
+}
+
+#[cfg(not(windows))]
+async fn terminate_process_tree(mut child: TokioChild) {
+    let pid = child.id().map(|id| id as libc::pid_t);
+
+    if let Some(pid) = pid {
+        unsafe {
+            let _ = libc::kill(-pid, libc::SIGINT);
+        }
+
+        match timeout(Duration::from_secs(10), child.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => {}
+            Err(_) => {
+                unsafe {
+                    let _ = libc::kill(-pid, libc::SIGKILL);
+                }
+                let _ = child.wait().await;
+            }
+        }
+    } else {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
 async fn shutdown(state: tauri::State<'_, ServerState>) {
     let child = {
         let mut guard = state.inner().child.lock().unwrap();
         guard.take()
     };
 
-    if let Some(mut child) = child {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+    #[cfg(windows)]
+    let job = {
+        let mut guard = state.inner().job.lock().unwrap();
+        guard.take()
+    };
+
+    if let Some(child) = child {
         #[cfg(windows)]
         {
-            if let Some(job) = {
-                let mut guard = state.inner().job.lock().unwrap();
-                guard.take()
-            } {
-                unsafe {
-                    let _ = TerminateJobObject(job.raw(), 1);
-                }
-            }
+            terminate_process_tree(child, job).await;
+        }
+
+        #[cfg(not(windows))]
+        {
+            terminate_process_tree(child).await;
         }
     } else {
         #[cfg(windows)]
         {
-            if let Some(_job) = {
-                let mut guard = state.inner().job.lock().unwrap();
-                guard.take()
-            } {}
+            if let Some(job) = job {
+                drop(job);
+            }
         }
     }
 }
