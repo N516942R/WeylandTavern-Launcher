@@ -130,6 +130,14 @@ fn load_env() {
     let _ = from_filename("../.env").or_else(|_| from_filename(".env"));
 }
 
+fn allow_git_pull_in_app() -> bool {
+    let raw = env::var("ALLOW_GIT_PULL_IN_APP").unwrap_or_default();
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn silly_dir() -> Result<PathBuf, String> {
     let path =
         env::var("SILLYTAVERN_DIR").unwrap_or_else(|_| "./vendor/WeylandTavern/SillyTavern".into());
@@ -192,6 +200,26 @@ async fn update_vendor(app: AppHandle, attempt_overwrite: bool) -> Result<Update
     let silly = silly_dir()?;
     let repo = vendor_dir()?;
     let log_path = silly.join("WTUpdate.log");
+
+    if !allow_git_pull_in_app() {
+        let script_hint = env::var("UPDATE_SCRIPT")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let mut message =
+            String::from("Skipping vendor update: in-app git pull is disabled by policy.");
+        if let Some(script) = script_hint {
+            message.push(' ');
+            message.push_str(&format!("Use {} to update WeylandTavern manually.", script));
+        }
+        log_line(&app, &message).await;
+        return Ok(UpdateResponse {
+            status: UpdateStatus::UpToDate,
+            message,
+            log_path: None,
+            diff: None,
+            stash_used: false,
+        });
+    }
 
     let mut stash_used = false;
 
@@ -372,6 +400,19 @@ async fn start_server(app: AppHandle, state: tauri::State<'_, ServerState>) -> R
     launch(&app, state).await
 }
 
+async fn ensure_command(bin: &str) -> Result<(), String> {
+    if TokioCommand::new(bin)
+        .arg("--version")
+        .status()
+        .await
+        .is_err()
+    {
+        Err(format!("{} not found", bin))
+    } else {
+        Ok(())
+    }
+}
+
 async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result<(), String> {
     load_env();
     let silly_dir = silly_dir()?;
@@ -381,20 +422,14 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
         return Ok(());
     }
 
-    for bin in ["node", "npm"] {
-        if TokioCommand::new(bin)
-            .arg("--version")
-            .status()
-            .await
-            .is_err()
-        {
-            return Err(format!("{} not found", bin));
-        }
-    }
-
     let run_npm = env::var("RUN_NPM_INSTALL").unwrap_or_else(|_| "always".into());
-    let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
-    if should_npm_install(&run_npm, &silly_dir)? {
+    let needs_npm_install = should_npm_install(&run_npm, &silly_dir)?;
+
+    ensure_command("node").await?;
+
+    if needs_npm_install {
+        ensure_command("npm").await?;
+        let npm_mode = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
         let mut cmd = TokioCommand::new("npm");
         cmd.current_dir(&silly_dir);
         cmd.env("NODE_ENV", "production");
