@@ -11,7 +11,7 @@ Tauri-based desktop launcher that wraps the bundled SillyTavern server, applies 
 
 1. **Vendor update prompt** – On startup the UI asks whether to run a `git pull` in the bundled WeylandTavern checkout. If the update fails, the launcher streams the contents of `WTUpdate.log`, offers a retry that stashes and overwrites local changes, and exposes a *Manage stashed changes* button so you can restore or discard any stash created during the retry.
 2. **Character updater prompt** – After the vendor step you can run the optional `character-downloader.js` sync. Failures are non-fatal; the UI reports the error and lets you retry or continue to server launch.
-3. **Server launch** – Once you continue, the backend performs the npm preflight according to `RUN_NPM_INSTALL`, starts `node server.js`, and waits for the health check before rendering the SillyTavern UI in an `<iframe>`. Environment variables `NO_BROWSER=1` and `BROWSER=none` are set automatically so no external browser opens.
+3. **Server launch** – Once you continue, the backend performs the npm preflight according to `RUN_NPM_INSTALL`, starts `node server.js`, and waits for the health check before redirecting the Tauri window to the SillyTavern UI. Environment variables `NO_BROWSER=1` and `BROWSER=none` are set automatically and the default CLI flags `--listen true --listenAddressIPv4 127.0.0.1 --listen-host 127.0.0.1 --browserLaunchEnabled=false --no-open` prevent the vendor script from opening an external browser.
 
 ### Update step & stash handling
 
@@ -45,7 +45,7 @@ The repo ships with a ready-to-use `.env`. Adjust values as needed:
 | `SILLYTAVERN_DIR` | Path to the SillyTavern app inside the vendor checkout. Must exist before launch. |
 | `SERVER_HOST` | Hostname passed to `node server.js`. |
 | `SERVER_PORT` | Preferred listening port (auto-fallback if unavailable). |
-| `SERVER_ARGS` | Additional command-line flags appended to `node server.js`. |
+| `SERVER_ARGS` | Additional command-line flags appended to `node server.js`. Defaults to `--listen true --listenAddressIPv4 127.0.0.1 --listen-host 127.0.0.1 --browserLaunchEnabled=false --no-open`. |
 | `RUN_NPM_INSTALL` | `auto`, `always`, or `never` to control npm installs. |
 | `NPM_MODE` | `ci` or `install` to choose between `npm ci` and `npm install`. |
 | `RUN_CHARACTER_SYNC` | `true`/`false` to offer the character updater step. |

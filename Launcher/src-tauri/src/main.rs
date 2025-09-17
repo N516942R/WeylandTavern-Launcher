@@ -21,7 +21,6 @@ use tokio::{
     time::sleep,
 };
 
-
 #[cfg(not(windows))]
 use tokio::time::timeout;
 
@@ -131,6 +130,18 @@ fn apply_node_env(cmd: &mut TokioCommand) {
     cmd.env("NODE_ENV", "production");
     cmd.env("NO_BROWSER", "1");
     cmd.env("BROWSER", "none");
+}
+
+fn args_contains_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| {
+        if arg == flag {
+            true
+        } else {
+            arg.strip_prefix(flag)
+                .map(|suffix| suffix.starts_with('='))
+                .unwrap_or(false)
+        }
+    })
 }
 
 #[tokio::main]
@@ -629,19 +640,30 @@ async fn launch(
         .split_whitespace()
         .map(|s| s.to_string())
         .collect();
-    if !args.iter().any(|a| a == "--listen") {
+    if !args_contains_flag(&args, "--listen") {
         args.push("--listen".into());
         args.push("true".into());
     }
-    if !args.iter().any(|a| a == "--listen-host") {
+    if !args_contains_flag(&args, "--listenAddressIPv4") {
+        args.push("--listenAddressIPv4".into());
+        args.push(host.clone());
+    }
+    if !args_contains_flag(&args, "--listen-host") {
         args.push("--listen-host".into());
         args.push(host.clone());
     }
-    if !args.iter().any(|a| a == "--listen-port") {
+    if !args_contains_flag(&args, "--port") {
+        args.push("--port".into());
+        args.push(port.to_string());
+    }
+    if !args_contains_flag(&args, "--listen-port") {
         args.push("--listen-port".into());
         args.push(port.to_string());
     }
-    if !args.iter().any(|a| a == "--no-open") {
+    if !args_contains_flag(&args, "--browserLaunchEnabled") {
+        args.push("--browserLaunchEnabled=false".into());
+    }
+    if !args_contains_flag(&args, "--no-open") {
         args.push("--no-open".into());
     }
 
