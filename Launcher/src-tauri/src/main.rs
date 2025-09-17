@@ -21,8 +21,6 @@ use tokio::{
     time::sleep,
 };
 
-#[cfg(unix)]
-use tokio::process::unix::CommandExt;
 
 #[cfg(not(windows))]
 use tokio::time::timeout;
@@ -790,14 +788,6 @@ fn silly_env_port(silly_dir: &Path) -> Result<Option<u16>, String> {
     for entry in iter {
         let (key, value) =
             entry.map_err(|e| format!("Failed to parse {}: {e}", env_path.display()))?;
-        let key = match key.into_string() {
-            Ok(key) => key,
-            Err(_) => continue,
-        };
-        let value = match value.into_string() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
 
         match key.as_str() {
             "PORT" => {
