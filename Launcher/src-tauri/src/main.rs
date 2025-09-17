@@ -101,6 +101,7 @@ struct UpdateResponse {
     log_path: Option<String>,
     diff: Option<String>,
     stash_used: bool,
+    log_contents: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -210,7 +211,7 @@ async fn run_git(dir: &Path, args: &[&str]) -> Result<std::process::Output, Stri
         .map_err(|e| e.to_string())
 }
 
-async fn write_update_log(log_path: &Path, pull: &str, diff: &str) -> Result<(), String> {
+async fn write_update_log(log_path: &Path, pull: &str, diff: &str) -> Result<String, String> {
     let mut file = tokio_fs::File::create(log_path)
         .await
         .map_err(|e| e.to_string())?;
@@ -232,7 +233,7 @@ async fn write_update_log(log_path: &Path, pull: &str, diff: &str) -> Result<(),
         .await
         .map_err(|e| e.to_string())?;
     file.flush().await.map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(contents)
 }
 
 #[tauri::command]
@@ -259,6 +260,7 @@ async fn update_vendor(app: AppHandle, attempt_overwrite: bool) -> Result<Update
             log_path: None,
             diff: None,
             stash_used: false,
+            log_contents: None,
         });
     }
 
@@ -311,6 +313,7 @@ async fn update_vendor(app: AppHandle, attempt_overwrite: bool) -> Result<Update
             log_path: None,
             diff: None,
             stash_used,
+            log_contents: None,
         });
     }
 
@@ -324,7 +327,7 @@ async fn update_vendor(app: AppHandle, attempt_overwrite: bool) -> Result<Update
         String::from_utf8_lossy(&diff_output.stderr)
     );
 
-    write_update_log(&log_path, &pull_text, &diff_text).await?;
+    let log_contents = write_update_log(&log_path, &pull_text, &diff_text).await?;
 
     let combined = {
         let mut combined = pull_text.trim().to_string();
@@ -355,6 +358,7 @@ async fn update_vendor(app: AppHandle, attempt_overwrite: bool) -> Result<Update
             Some(combined)
         },
         stash_used,
+        log_contents: Some(log_contents),
     };
 
     Ok(response)
@@ -435,8 +439,13 @@ async fn run_character_sync(app: AppHandle) -> Result<CharacterResponse, String>
 }
 
 #[tauri::command]
-async fn start_server(app: AppHandle, state: tauri::State<'_, ServerState>) -> Result<(), String> {
-    launch(&app, state).await
+async fn start_server(
+    app: AppHandle,
+    state: tauri::State<'_, ServerState>,
+    force: Option<bool>,
+) -> Result<(), String> {
+    let force = force.unwrap_or(false);
+    launch(&app, state, force).await
 }
 
 async fn command_exists(program: &OsStr) -> bool {
@@ -530,7 +539,11 @@ async fn ensure_command(bin: &str) -> Result<(), String> {
     }
 }
 
-async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result<(), String> {
+async fn launch(
+    app: &AppHandle,
+    state: tauri::State<'_, ServerState>,
+    force_start: bool,
+) -> Result<(), String> {
     load_env();
     let silly_dir = silly_dir()?;
 
@@ -546,36 +559,68 @@ async fn launch(app: &AppHandle, state: tauri::State<'_, ServerState>) -> Result
     ensure_command("node").await?;
 
     if needs_npm_install {
-        let npm_tool = locate_npm(app).await?;
-        let npm_mode_raw = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
-        let npm_mode = npm_mode_raw.trim().to_ascii_lowercase();
-        let lock_exists = silly_dir.join("package-lock.json").exists();
-        let mut cmd = npm_tool.into_command();
-
-        cmd.current_dir(&silly_dir);
-        apply_node_env(&mut cmd);
-        if npm_mode == "ci" && lock_exists {
-            cmd.arg("ci");
+        if force_start {
+            log_line(
+                app,
+                "Skipping npm install after previous failure at user request.",
+            )
+            .await;
         } else {
-            if npm_mode == "ci" && !lock_exists {
-                log_line(
-                    app,
-                    "package-lock.json missing; falling back to npm install.",
-                )
-                .await;
+            let npm_tool = locate_npm(app).await?;
+            let npm_mode_raw = env::var("NPM_MODE").unwrap_or_else(|_| "install".into());
+            let npm_mode = npm_mode_raw.trim().to_ascii_lowercase();
+            let lock_exists = silly_dir.join("package-lock.json").exists();
+            let mut cmd = npm_tool.into_command();
+
+            cmd.current_dir(&silly_dir);
+            apply_node_env(&mut cmd);
+            if npm_mode == "ci" && lock_exists {
+                cmd.arg("ci");
+            } else {
+                if npm_mode == "ci" && !lock_exists {
+                    log_line(
+                        app,
+                        "package-lock.json missing; falling back to npm install.",
+                    )
+                    .await;
+                }
+                cmd.args([
+                    "install",
+                    "--no-audit",
+                    "--no-fund",
+                    "--loglevel=error",
+                    "--no-progress",
+                    "--omit=dev",
+                ]);
             }
-            cmd.args([
-                "install",
-                "--no-audit",
-                "--no-fund",
-                "--loglevel=error",
-                "--no-progress",
-                "--omit=dev",
-            ]);
-        }
-        log_line(app, "Installing Node modules...").await;
-        if !cmd.status().await.map_err(|e| e.to_string())?.success() {
-            return Err("npm install failed".into());
+            log_line(app, "Installing Node modules...").await;
+            let output = cmd.output().await.map_err(|e| e.to_string())?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !output.status.success() {
+                let combined = format!("{}{}", stdout, stderr);
+                let trimmed = combined.trim();
+                if !trimmed.is_empty() {
+                    log_line(app, trimmed).await;
+                }
+                return Err(if trimmed.is_empty() {
+                    "NPM_INSTALL_FAILED::npm install failed. Check logs for details.".into()
+                } else {
+                    format!(
+                        "NPM_INSTALL_FAILED::npm install failed. Details: {}",
+                        trimmed
+                    )
+                });
+            } else {
+                let success_output = stdout.trim();
+                if !success_output.is_empty() {
+                    log_line(app, success_output).await;
+                }
+                let error_output = stderr.trim();
+                if !error_output.is_empty() {
+                    log_line(app, error_output).await;
+                }
+            }
         }
     }
 
