@@ -50,6 +50,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [frameReloadToken, setFrameReloadToken] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverRequested, setServerRequested] = useState(false);
   const [serverForce, setServerForce] = useState(false);
@@ -109,32 +110,23 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!ready || !url || navigationError) {
+  const handleOpenInBrowser = useCallback(() => {
+    if (!url) {
       return;
     }
+    window.open(url, '_blank', 'noopener');
+  }, [url]);
 
-    let cancelled = false;
+  const handleIframeError = useCallback(() => {
+    setNavigationError(
+      'Failed to open WeylandTavern inside the launcher window. Use the button below to fall back to your browser.'
+    );
+  }, []);
 
-    const openInWebview = async () => {
-      try {
-        await appWindow.setUrl(url);
-      } catch (err) {
-        console.error('Failed to navigate to SillyTavern within the launcher window.', err);
-        if (!cancelled) {
-          setNavigationError(
-            'Failed to open WeylandTavern inside the launcher window. Use the button below to fall back to your browser.'
-          );
-        }
-      }
-    };
-
-    void openInWebview();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, url, navigationError]);
+  const handleRetryIframe = useCallback(() => {
+    setNavigationError(null);
+    setFrameReloadToken((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     if (step === 'launching' && !serverRequested) {
@@ -663,15 +655,90 @@ function App() {
         <p>
           Launching WeylandTavern at <code>{url}</code>...
         </p>
-        {navigationError && (
-          <>
-            <p style={{ color: '#ff8a80' }}>{navigationError}</p>
-            <div style={buttonRowStyle}>
-              <button onClick={() => setNavigationError(null)}>Retry opening</button>
-              <button onClick={() => window.open(url, '_blank', 'noopener')}>Open in browser</button>
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            flex: 1,
+            alignSelf: 'stretch',
+            borderRadius: '0.75rem',
+            overflow: 'hidden',
+            boxShadow: '0 0 1.5rem rgba(0,0,0,0.65)',
+            border: '1px solid rgba(255,255,255,0.08)',
+          }}
+        >
+          <iframe
+            key={frameReloadToken}
+            src={url}
+            title="WeylandTavern"
+            allow="clipboard-read; clipboard-write; fullscreen"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock allow-top-navigation-by-user-activation"
+            onLoad={() => setNavigationError(null)}
+            onError={handleIframeError}
+            style={{
+              border: 'none',
+              width: '100%',
+              height: '100%',
+              backgroundColor: '#000',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: '1rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              backgroundColor: 'rgba(0,0,0,0.65)',
+              padding: '0.75rem 1.5rem',
+              borderRadius: '0.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.35rem',
+              alignItems: 'center',
+              maxWidth: 'calc(100% - 2rem)',
+            }}
+          >
+            <strong>WeylandTavern Launcher</strong>
+            <span style={{ fontSize: '0.85rem', opacity: 0.85 }}>
+              Server ready at <code>{url}</code>
+            </span>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button onClick={handleOpenInBrowser}>Open in browser</button>
+              <button onClick={() => setShowLogs((value) => !value)}>
+                {showLogs ? 'Hide logs' : 'Show logs'}
+              </button>
+              <button onClick={() => void appWindow.close()}>Exit</button>
             </div>
-          </>
-        )}
+            <span style={{ fontSize: '0.75rem', opacity: 0.75 }}>
+              Use <kbd>Ctrl</kbd>+<kbd>L</kbd> to toggle logs, <kbd>Ctrl</kbd>+<kbd>R</kbd> to reload, and <kbd>Ctrl</kbd>+<kbd>Q</kbd> to quit.
+            </span>
+          </div>
+          {navigationError && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.8)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '1rem',
+                padding: '1.5rem',
+                textAlign: 'center',
+              }}
+            >
+              <p style={{ color: '#ff8a80' }}>{navigationError}</p>
+              <div style={buttonRowStyle}>
+                <button onClick={handleRetryIframe}>Retry opening</button>
+                <button onClick={handleOpenInBrowser}>Open in browser</button>
+              </div>
+            </div>
+          )}
+        </div>
         {showLogs && (
           <div
             style={{
@@ -684,6 +751,7 @@ function App() {
               color: '#0f0',
               overflow: 'auto',
               padding: '1rem',
+              zIndex: 10,
             }}
           >
             <pre>{logs.join('\n')}</pre>
