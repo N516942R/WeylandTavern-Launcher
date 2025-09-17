@@ -49,6 +49,7 @@ function App() {
   const [characterSkipped, setCharacterSkipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverRequested, setServerRequested] = useState(false);
   const [serverForce, setServerForce] = useState(false);
@@ -71,6 +72,7 @@ function App() {
 
   const goToLaunching = useCallback((force: boolean) => {
     setServerError(null);
+    setNavigationError(null);
     setServerForce(force);
     setServerRequested(false);
     setStep('launching');
@@ -80,6 +82,7 @@ function App() {
     const unlistenReady = listen<string>('server-ready', (e) => {
       setUrl(e.payload);
       setReady(true);
+      setNavigationError(null);
     });
     const unlistenLog = listen<string>('log', (e) => {
       setLogs((prev) => [...prev, e.payload]);
@@ -105,6 +108,33 @@ function App() {
       window.removeEventListener('keydown', handler);
     };
   }, []);
+
+  useEffect(() => {
+    if (!ready || !url || navigationError) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const openInWebview = async () => {
+      try {
+        await appWindow.setUrl(url);
+      } catch (err) {
+        console.error('Failed to navigate to SillyTavern within the launcher window.', err);
+        if (!cancelled) {
+          setNavigationError(
+            'Failed to open WeylandTavern inside the launcher window. Use the button below to fall back to your browser.'
+          );
+        }
+      }
+    };
+
+    void openInWebview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, url, navigationError]);
 
   useEffect(() => {
     if (step === 'launching' && !serverRequested) {
@@ -617,17 +647,40 @@ function App() {
 
   if (ready) {
     return (
-      <div style={{ width: '100vw', height: '100vh' }}>
-        <iframe src={url} style={{ border: 'none', width: '100%', height: '100%' }} />
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '100vh',
+          padding: '2rem',
+          gap: '1rem',
+          textAlign: 'center',
+        }}
+      >
+        <h1>WeylandTavern Launcher</h1>
+        <p>
+          Launching WeylandTavern at <code>{url}</code>...
+        </p>
+        {navigationError && (
+          <>
+            <p style={{ color: '#ff8a80' }}>{navigationError}</p>
+            <div style={buttonRowStyle}>
+              <button onClick={() => setNavigationError(null)}>Retry opening</button>
+              <button onClick={() => window.open(url, '_blank', 'noopener')}>Open in browser</button>
+            </div>
+          </>
+        )}
         {showLogs && (
           <div
             style={{
-              position: 'absolute',
+              position: 'fixed',
               top: 0,
               left: 0,
               right: 0,
               bottom: 0,
-              backgroundColor: 'rgba(0,0,0,0.8)',
+              backgroundColor: 'rgba(0,0,0,0.85)',
               color: '#0f0',
               overflow: 'auto',
               padding: '1rem',
