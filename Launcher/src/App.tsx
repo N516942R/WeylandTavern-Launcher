@@ -11,6 +11,7 @@ interface UpdateResponse {
   status: UpdateStatus;
   message: string;
   logPath?: string;
+  logContents?: string;
   diff?: string;
   stashUsed: boolean;
 }
@@ -23,9 +24,11 @@ interface CharacterResponse {
 type Step =
   | 'updatePrompt'
   | 'updateRunning'
+  | 'updateRetryPrompt'
   | 'stashPrompt'
   | 'characterPrompt'
   | 'characterRunning'
+  | 'characterFailurePrompt'
   | 'launching';
 
 type ProgressStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped';
@@ -48,6 +51,30 @@ function App() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverRequested, setServerRequested] = useState(false);
+  const [serverForce, setServerForce] = useState(false);
+
+  const serverErrorInfo = useMemo(() => {
+    if (!serverError) {
+      return null;
+    }
+    const marker = 'NPM_INSTALL_FAILED::';
+    const markerIndex = serverError.indexOf(marker);
+    if (markerIndex !== -1) {
+      const detail = serverError.slice(markerIndex + marker.length).trim();
+      return {
+        type: 'npm' as const,
+        message: detail || 'npm install failed. Check logs for details.',
+      };
+    }
+    return { type: 'other' as const, message: serverError };
+  }, [serverError]);
+
+  const goToLaunching = useCallback((force: boolean) => {
+    setServerError(null);
+    setServerForce(force);
+    setServerRequested(false);
+    setStep('launching');
+  }, []);
 
   useEffect(() => {
     const unlistenReady = listen<string>('server-ready', (e) => {
@@ -83,13 +110,17 @@ function App() {
     if (step === 'launching' && !serverRequested) {
       setServerRequested(true);
       setServerError(null);
-      void invoke('start_server').catch((err) => {
-        setServerError(err instanceof Error ? err.message : String(err));
-      });
+      void invoke('start_server', { force: serverForce })
+        .catch((err) => {
+          setServerError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          setServerForce(false);
+        });
     }
-  }, [step, serverRequested]);
+  }, [step, serverRequested, serverForce]);
 
-  const handleRunVendorUpdate = async () => {
+  const runVendorUpdate = useCallback(async (attemptOverwrite: boolean) => {
     setError(null);
     setUpdateErrorMessage(null);
     setUpdateSkipped(false);
@@ -97,9 +128,13 @@ function App() {
     setIsProcessing(true);
     setStep('updateRunning');
     try {
-      const result = await invoke<UpdateResponse>('update_vendor', { attemptOverwrite: true });
+      const result = await invoke<UpdateResponse>('update_vendor', {
+        attemptOverwrite,
+      });
       setUpdateResult(result);
-      if (result.stashUsed) {
+      if (result.status === 'needRetry' || result.status === 'failed') {
+        setStep('updateRetryPrompt');
+      } else if (result.stashUsed) {
         setStep('stashPrompt');
       } else {
         setStep('characterPrompt');
@@ -111,12 +146,22 @@ function App() {
     } finally {
       setIsProcessing(false);
     }
+  }, []);
+
+  const handleRunVendorUpdate = () => {
+    void runVendorUpdate(false);
+  };
+
+  const handleRetryVendorUpdate = () => {
+    void runVendorUpdate(true);
   };
 
   const handleSkipUpdate = () => {
     setError(null);
     setUpdateErrorMessage(null);
-    setUpdateResult(null);
+    if (!updateResult?.logPath && !updateResult?.logContents) {
+      setUpdateResult(null);
+    }
     setUpdateSkipped(true);
     setStep('characterPrompt');
   };
@@ -140,16 +185,22 @@ function App() {
     try {
       const result = await invoke<CharacterResponse>('run_character_sync');
       setCharacterResult(result);
+      if (result.success) {
+        goToLaunching(false);
+      } else {
+        setStep('characterFailurePrompt');
+      }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       setCharacterResult({
         success: false,
-        message: err instanceof Error ? err.message : String(err),
+        message,
       });
+      setStep('characterFailurePrompt');
     } finally {
       setIsProcessing(false);
-      setStep('launching');
     }
-  }, []);
+  }, [goToLaunching]);
 
   const handleRunCharacter = () => {
     setCharacterSkipped(false);
@@ -161,15 +212,20 @@ function App() {
   const handleSkipCharacter = () => {
     setCharacterSkipped(true);
     setCharacterResult({ success: true, message: CHARACTER_SKIP_MESSAGE });
-    setStep('launching');
+    goToLaunching(false);
+  };
+
+  const handleContinueAfterCharacterFailure = () => {
+    goToLaunching(false);
   };
 
   const handleExit = () => {
     void appWindow.close();
   };
 
-  const retryServer = () => {
+  const retryServer = (force = false) => {
     setServerError(null);
+    setServerForce(force);
     setServerRequested(false);
   };
 
@@ -268,7 +324,7 @@ function App() {
       if (serverError) {
         serverStatus = 'error';
         serverProgress = 100;
-        serverMessage = serverError;
+        serverMessage = serverErrorInfo?.message ?? serverError;
       } else if (serverRequested) {
         serverStatus = 'running';
         serverProgress = 60;
@@ -353,15 +409,38 @@ function App() {
   };
 
   const renderUpdateDetails = () => {
-    if (!updateResult || !updateResult.logPath) {
+    if (!updateResult) {
+      return null;
+    }
+    const { logPath, logContents, diff } = updateResult;
+    if (!logPath && !logContents && !diff) {
       return null;
     }
     return (
       <div style={{ marginTop: '0.75rem', maxWidth: '42rem' }}>
-        <p>
-          A log file was written to <code>{updateResult.logPath}</code>.
-        </p>
-        {updateResult.diff && (
+        {logPath && (
+          <p>
+            A log file was written to <code>{logPath}</code>.
+          </p>
+        )}
+        {logContents && (
+          <div>
+            <p>WTUpdate.log contents:</p>
+            <pre
+              style={{
+                backgroundColor: '#111',
+                color: '#0f0',
+                padding: '0.75rem',
+                borderRadius: '0.5rem',
+                maxHeight: '12rem',
+                overflow: 'auto',
+              }}
+            >
+              {logContents}
+            </pre>
+          </div>
+        )}
+        {!logContents && diff && (
           <pre
             style={{
               backgroundColor: '#111',
@@ -372,7 +451,7 @@ function App() {
               overflow: 'auto',
             }}
           >
-            {updateResult.diff}
+            {diff}
           </pre>
         )}
       </div>
@@ -400,6 +479,35 @@ function App() {
         );
       case 'updateRunning':
         return <p>Updating WeylandTavern...</p>;
+      case 'updateRetryPrompt': {
+        const retryMessage =
+          updateResult?.message ?? 'There was an error updating WeylandTavern.';
+        const canRetry = updateResult?.status === 'needRetry';
+        return (
+          <>
+            <p style={{ color: '#ff8a80' }}>{retryMessage}</p>
+            <p>Review WTUpdate.log below and choose how to proceed.</p>
+            <div style={buttonRowStyle}>
+              {canRetry && (
+                <button onClick={handleRetryVendorUpdate} disabled={isProcessing}>
+                  Retry with overwrite
+                </button>
+              )}
+              {updateResult?.stashUsed && (
+                <button onClick={() => setStep('stashPrompt')} disabled={isProcessing}>
+                  Manage stashed changes
+                </button>
+              )}
+              <button onClick={handleSkipUpdate} disabled={isProcessing}>
+                Skip update
+              </button>
+              <button onClick={handleExit} disabled={isProcessing}>
+                Exit
+              </button>
+            </div>
+          </>
+        );
+      }
       case 'stashPrompt':
         return (
           <>
@@ -433,6 +541,30 @@ function App() {
         );
       case 'characterRunning':
         return <p>Checking for character updates...</p>;
+      case 'characterFailurePrompt': {
+        const failureMessage =
+          characterResult?.message ?? 'Character update failed. Check logs for details.';
+        return (
+          <>
+            <p style={{ color: '#ff8a80' }}>{failureMessage}</p>
+            <p>Continue launching the server anyway?</p>
+            <div style={buttonRowStyle}>
+              <button onClick={handleRunCharacter} disabled={isProcessing}>
+                Retry sync
+              </button>
+              <button
+                onClick={handleContinueAfterCharacterFailure}
+                disabled={isProcessing}
+              >
+                Continue without sync
+              </button>
+              <button onClick={handleExit} disabled={isProcessing}>
+                Exit
+              </button>
+            </div>
+          </>
+        );
+      }
       case 'launching':
         return (
           <>
@@ -448,10 +580,32 @@ function App() {
                 {characterResult.message}
               </p>
             )}
-            {serverError && (
+            {serverErrorInfo && (
               <div style={{ marginTop: '1rem' }}>
-                <p style={{ color: '#ff8a80' }}>Failed to start the server: {serverError}</p>
-                <button onClick={retryServer}>Retry start</button>
+                {serverErrorInfo.type === 'npm' ? (
+                  <>
+                    <p style={{ color: '#ff8a80' }}>
+                      npm install failed. Continue launching anyway?
+                    </p>
+                    <div style={buttonRowStyle}>
+                      <button onClick={() => retryServer(false)}>Retry npm install</button>
+                      <button onClick={() => retryServer(true)}>
+                        Continue without reinstalling
+                      </button>
+                      <button onClick={handleExit}>Exit</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p style={{ color: '#ff8a80' }}>
+                      Failed to start the server: {serverErrorInfo.message}
+                    </p>
+                    <div style={buttonRowStyle}>
+                      <button onClick={() => retryServer(false)}>Retry start</button>
+                      <button onClick={handleExit}>Exit</button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </>
